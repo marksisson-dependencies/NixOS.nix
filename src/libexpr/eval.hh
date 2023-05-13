@@ -25,14 +25,61 @@ struct DerivedPath;
 enum RepairFlag : bool;
 
 
+/**
+ * Function that implements a primop.
+ */
 typedef void (* PrimOpFun) (EvalState & state, const PosIdx pos, Value * * args, Value & v);
 
+/**
+ * Info about a primitive operation, and its implementation
+ */
 struct PrimOp
 {
+    /**
+     * Implementation of the primop.
+     */
     PrimOpFun fun;
+
+    /**
+     * Aritiy of the primop.
+     *
+     * If `args` is not empty, this field will be computed from that
+     * field instead, so it doesn't need to be manually set.
+     */
     size_t arity;
+
+    /**
+     * Name of the primop. `__` prefix is treated specially.
+     */
     std::string name;
+
+    /**
+     * Names of the parameters of a primop, for primops that take a
+     * fixed number of arguments to be substituted for these parameters.
+     */
     std::vector<std::string> args;
+
+    /**
+     * Optional free-form documentation about the primop.
+     */
+    const char * doc = nullptr;
+};
+
+/**
+ * Info about a constant
+ */
+struct Constant
+{
+    /**
+     * Optional type of the constant (known since it is a fixed value.
+     *
+     * @todo we should use an enum for this.
+     */
+    const char * type = nullptr;
+
+    /**
+     * Optional free-form documentation about the constant.
+     */
     const char * doc = nullptr;
 };
 
@@ -509,15 +556,23 @@ public:
      */
     std::shared_ptr<StaticEnv> staticBaseEnv; // !!! should be private
 
+    /**
+     * Name and documentation about every constant.
+     *
+     * Constants from primops are hard to crawl, and their docs will go
+     * here too.
+     */
+    std::vector<std::pair<std::string, Constant>> constantInfos;
+
 private:
 
     unsigned int baseEnvDispl = 0;
 
     void createBaseEnv();
 
-    Value * addConstant(const std::string & name, Value & v);
+    Value * addConstant(const std::string & name, Value & v, Constant info);
 
-    void addConstant(const std::string & name, Value * v);
+    void addConstant(const std::string & name, Value * v, Constant info);
 
     Value * addPrimOp(const std::string & name,
         size_t arity, PrimOpFun primOp);
@@ -534,7 +589,7 @@ public:
         std::optional<std::string> name;
         size_t arity;
         std::vector<std::string> args;
-        const char * doc;
+        const char & doc;
     };
 
     std::optional<Doc> getDoc(Value & v);

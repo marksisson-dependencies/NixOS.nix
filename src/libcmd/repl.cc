@@ -726,7 +726,7 @@ bool NixRepl::processLine(std::string line)
                     + concatStringsSep(" ", args) + "\n\n";
             }
 
-            markdown += stripIndentation(doc->doc);
+            markdown += stripIndentation(&doc->doc);
 
             logger->cout(trim(renderMarkdownToTerminal(markdown)));
         } else

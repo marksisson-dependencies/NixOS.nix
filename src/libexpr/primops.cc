@@ -4082,37 +4082,130 @@ void EvalState::createBaseEnv()
 
     /* `builtins' must be first! */
     v.mkAttrs(buildBindings(128).finish());
-    addConstant("builtins", v);
+    addConstant("builtins", v, {
+        .type = "attribute set",
+        .doc = R"(
+          Contains all the [built-in functions](./builtins.md) and values, in order to avoid polluting the global scope.
+
+          Since built-in functions were added over time, [testing for attributes](./operators.md#has-attribute) in `builtins` can be used for graceful fallback on older Nix installations:
+
+          ```nix
+          if builtins ? getEnv then builtins.getEnv "PATH" else ""
+          ```
+        )",
+    });
 
     v.mkBool(true);
-    addConstant("true", v);
+    addConstant("true", v, {
+        .type = "boolean",
+        .doc = R"(
+          The boolean value for truth.
+
+          Users familiar with other languages might assume `true` is special syntax in the Nix language,
+          but this is in fact not the case:
+
+          ```nix-repl
+          nix-repl> let true = 1; in true
+          1
+          ```
+        )",
+    });
 
     v.mkBool(false);
-    addConstant("false", v);
+    addConstant("false", v, {
+        .type = "boolean",
+        .doc = R"(
+          The boolean value for falsity.
+
+          Users familiar with other languages might assume `false` is special syntax in the Nix language,
+          but this is in fact not the case:
+
+          ```nix-repl
+          nix-repl> let false = 1; in false
+          1
+          ```
+        )",
+    });
 
     v.mkNull();
-    addConstant("null", v);
+    addConstant("null", v, {
+        .type = "null",
+        .doc = R"(
+          The null value.
+
+          Users familiar with other languages might assume `null` is special syntax in the Nix language,
+          but this is in fact not the case:
+
+          ```nix-repl
+          nix-repl> let null = 1; in null
+          1
+          ```
+        )",
+    });
 
     if (!evalSettings.pureEval) {
         v.mkInt(time(0));
-        addConstant("__currentTime", v);
+        addConstant("__currentTime", v, {
+            .type = "integer",
+            .doc = R"(
+              The current time.
+            )",
+        });
 
         v.mkString(settings.thisSystem.get());
-        addConstant("__currentSystem", v);
+        addConstant("__currentSystem", v, {
+            .type = "string",
+            .doc = R"(
+              The built-in value `currentSystem` evaluates to the Nix platform
+              identifier for the Nix installation on which the expression is being
+              evaluated, such as `"i686-linux"` or `"x86_64-darwin"`.
+            )",
+        });
     }
 
     v.mkString(nixVersion);
-    addConstant("__nixVersion", v);
+    addConstant("__nixVersion", v, {
+        .type = "string",
+        .doc = R"(
+          The version of Nix.
+
+          If your CLI says, say:
+          ```shell-session
+          $ nix --version
+          nix (Nix) 2.16.0
+          ```
+          Then this would be:
+          ```nix-repl
+          nix-repl> builtins.nixVersion
+          "2.16.0"
+          ```
+        )",
+    });
 
     v.mkString(store->storeDir);
-    addConstant("__storeDir", v);
+    addConstant("__storeDir", v, {
+        .type = "string",
+        .doc = R"(
+          The location (possibly only inside chroots / mount namespaces) where store paths will be located.
+
+          ```shell-session
+          $ nix-instantiate --store 'dummy://?store=/blah' --eval --expr builtins.storeDir
+          "/blah"
+          ```
+        )",
+    });
 
     /* Language version.  This should be increased every time a new
        language feature gets added.  It's not necessary to increase it
        when primops get added, because you can just use `builtins ?
        primOp' to check. */
     v.mkInt(6);
-    addConstant("__langVersion", v);
+    addConstant("__langVersion", v, {
+        .type = "integer",
+        .doc = R"(
+          The current version of the Nix language.
+        )",
+    });
 
     // Miscellaneous
     if (evalSettings.enableNativeCode) {
@@ -4141,7 +4234,12 @@ void EvalState::createBaseEnv()
         attrs.alloc("prefix").mkString(i.first);
         (v.listElems()[n++] = allocValue())->mkAttrs(attrs);
     }
-    addConstant("__nixPath", v);
+    addConstant("__nixPath", v, {
+        .type = "list",
+        .doc = R"(
+          The current 'Nix Path' search path.
+        )",
+    });
 
     if (RegisterPrimOp::primOps)
         for (auto & primOp : *RegisterPrimOp::primOps)
@@ -4158,9 +4256,12 @@ void EvalState::createBaseEnv()
             }
 
     /* Add a wrapper around the derivation primop that computes the
-       `drvPath' and `outPath' attributes lazily. */
+       `drvPath' and `outPath' attributes lazily.
+
+       Null docs because it is documented separately.
+       */
     auto vDerivation = allocValue();
-    addConstant("derivation", vDerivation);
+    addConstant("derivation", vDerivation, {});
 
     /* Now that we've added all primops, sort the `builtins' set,
        because attribute lookups expect it to be sorted. */

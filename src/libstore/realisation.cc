@@ -78,7 +78,7 @@ Realisation Realisation::fromJSON(
         auto fieldIterator = json.find(fieldName);
         if (fieldIterator == json.end())
             return std::nullopt;
-        return *fieldIterator;
+        return {*fieldIterator};
     };
     auto getField = [&](std::string fieldName) -> std::string {
         if (auto field = getOptionalField(fieldName))
@@ -134,6 +134,19 @@ size_t Realisation::checkSignatures(const PublicKeys & publicKeys) const
         if (checkSignature(publicKeys, sig))
             good++;
     return good;
+}
+
+
+SingleDrvOutputs filterDrvOutputs(const OutputsSpec& wanted, SingleDrvOutputs&& outputs)
+{
+    SingleDrvOutputs ret = std::move(outputs);
+    for (auto it = ret.begin(); it != ret.end(); ) {
+        if (!wanted.contains(it->first))
+            it = ret.erase(it);
+        else
+            ++it;
+    }
+    return ret;
 }
 
 StorePath RealisedPath::path() const {

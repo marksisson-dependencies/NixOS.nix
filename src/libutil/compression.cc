@@ -23,7 +23,7 @@ struct ChunkedCompressionSink : CompressionSink
 {
     uint8_t outbuf[32 * 1024];
 
-    void write(std::string_view data) override
+    void writeUnbuffered(std::string_view data) override
     {
         const size_t CHUNK_SIZE = sizeof(outbuf) << 2;
         while (!data.empty()) {
@@ -103,7 +103,7 @@ struct ArchiveCompressionSink : CompressionSink
             throw Error(reason, archive_error_string(this->archive));
     }
 
-    void write(std::string_view data) override
+    void writeUnbuffered(std::string_view data) override
     {
         ssize_t result = archive_write_data(archive, data.data(), data.length());
         if (result <= 0) check(result);
@@ -136,7 +136,7 @@ struct NoneSink : CompressionSink
             warn("requested compression level '%d' not supported by compression method 'none'", level);
     }
     void finish() override { flush(); }
-    void write(std::string_view data) override { nextSink(data); }
+    void writeUnbuffered(std::string_view data) override { nextSink(data); }
 };
 
 struct BrotliDecompressionSink : ChunkedCompressionSink
@@ -190,13 +190,13 @@ struct BrotliDecompressionSink : ChunkedCompressionSink
     }
 };
 
-ref<std::string> decompress(const std::string & method, const std::string & in)
+std::string decompress(const std::string & method, std::string_view in)
 {
     StringSink ssink;
     auto sink = makeDecompressionSink(method, ssink);
     (*sink)(in);
     sink->finish();
-    return ssink.s;
+    return std::move(ssink.s);
 }
 
 std::unique_ptr<FinishSink> makeDecompressionSink(const std::string & method, Sink & nextSink)
@@ -281,13 +281,13 @@ ref<CompressionSink> makeCompressionSink(const std::string & method, Sink & next
         throw UnknownCompressionMethod("unknown compression method '%s'", method);
 }
 
-ref<std::string> compress(const std::string & method, const std::string & in, const bool parallel, int level)
+std::string compress(const std::string & method, std::string_view in, const bool parallel, int level)
 {
     StringSink ssink;
     auto sink = makeCompressionSink(method, ssink, parallel, level);
     (*sink)(in);
     sink->finish();
-    return ssink.s;
+    return std::move(ssink.s);
 }
 
 }

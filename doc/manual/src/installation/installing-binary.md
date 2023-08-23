@@ -3,7 +3,7 @@
 The easiest way to install Nix is to run the following command:
 
 ```console
-$ sh <(curl -L https://nixos.org/nix/install)
+$ curl -L https://nixos.org/nix/install | sh
 ```
 
 This will run the installer interactively (causing it to explain what
@@ -13,7 +13,7 @@ for your platform:
 - multi-user on macOS
 
   > **Notes on read-only filesystem root in macOS 10.15 Catalina +**
-  > 
+  >
   > - It took some time to support this cleanly. You may see posts,
   >   examples, and tutorials using obsolete workarounds.
   > - Supporting it cleanly made macOS installs too complex to qualify
@@ -27,12 +27,12 @@ you can authenticate with `sudo`.
 To explicitly select a single-user installation on your system:
 
 ```console
-$ sh <(curl -L https://nixos.org/nix/install) --no-daemon
+$ curl -L https://nixos.org/nix/install | sh -s -- --no-daemon
 ```
 
 This will perform a single-user installation of Nix, meaning that `/nix`
-is owned by the invoking user. You should run this under your usual user
-account, *not* as root. The script will invoke `sudo` to create `/nix`
+is owned by the invoking user. You can run this under your usual user
+account or root. The script will invoke `sudo` to create `/nix`
 if it doesn’t already exist. If you don’t have `sudo`, you should
 manually create `/nix` first as root, e.g.:
 
@@ -47,12 +47,6 @@ The install script will modify the first writable file from amongst
 `NIX_INSTALLER_NO_MODIFY_PROFILE` environment variable before executing
 the install script to disable this behaviour.
 
-You can uninstall Nix simply by running:
-
-```console
-$ rm -rf /nix
-```
-
 # Multi User Installation
 
 The multi-user Nix installation creates system users, and a system
@@ -66,16 +60,16 @@ You can instruct the installer to perform a multi-user installation on
 your system:
 
 ```console
-$ sh <(curl -L https://nixos.org/nix/install) --daemon
+$ curl -L https://nixos.org/nix/install | sh -s -- --daemon
 ```
 
 The multi-user installation of Nix will create build users between the
 user IDs 30001 and 30032, and a group with the group ID 30000. You
-should run this under your usual user account, *not* as root. The script
+can run this under your usual user account or root. The script
 will invoke `sudo` as needed.
 
 > **Note**
-> 
+>
 > If you need Nix to use a different group ID or user ID set, you will
 > have to download the tarball manually and [edit the install
 > script](#installing-from-a-binary-tarball).
@@ -84,32 +78,13 @@ The installer will modify `/etc/bashrc`, and `/etc/zshrc` if they exist.
 The installer will first back up these files with a `.backup-before-nix`
 extension. The installer will also create `/etc/profile.d/nix.sh`.
 
-You can uninstall Nix with the following commands:
+# macOS Installation
 
-```console
-sudo rm -rf /etc/profile/nix.sh /etc/nix /nix ~root/.nix-profile ~root/.nix-defexpr ~root/.nix-channels ~/.nix-profile ~/.nix-defexpr ~/.nix-channels
-
-# If you are on Linux with systemd, you will need to run:
-sudo systemctl stop nix-daemon.socket
-sudo systemctl stop nix-daemon.service
-sudo systemctl disable nix-daemon.socket
-sudo systemctl disable nix-daemon.service
-sudo systemctl daemon-reload
-
-# If you are on macOS, you will need to run:
-sudo launchctl unload /Library/LaunchDaemons/org.nixos.nix-daemon.plist
-sudo rm /Library/LaunchDaemons/org.nixos.nix-daemon.plist
-```
-
-There may also be references to Nix in `/etc/profile`, `/etc/bashrc`,
-and `/etc/zshrc` which you may remove.
-
-# macOS Installation <a name="sect-macos-installation-change-store-prefix"></a><a name="sect-macos-installation-encrypted-volume"></a><a name="sect-macos-installation-symlink"></a><a name="sect-macos-installation-recommended-notes"></a>
+[]{#sect-macos-installation-change-store-prefix}[]{#sect-macos-installation-encrypted-volume}[]{#sect-macos-installation-symlink}[]{#sect-macos-installation-recommended-notes}
 <!-- Note: anchors above to catch permalinks to old explanations -->
 
 We believe we have ironed out how to cleanly support the read-only root
-on modern macOS. New installs will do this automatically, and you can
-also re-run a new installer to convert your existing setup.
+on modern macOS. New installs will do this automatically.
 
 This section previously detailed the situation, options, and trade-offs,
 but it now only outlines what the installer does. You don't need to know
@@ -153,18 +128,15 @@ this to run the installer, but it may help if you run into trouble:
 
 # Installing a pinned Nix version from a URL
 
-NixOS.org hosts version-specific installation URLs for all Nix versions
-since 1.11.16, at `https://releases.nixos.org/nix/nix-version/install`.
+Version-specific installation URLs for all Nix versions
+since 1.11.16 can be found at [releases.nixos.org](https://releases.nixos.org/?prefix=nix/).
+The corresponding SHA-256 hash can be found in the directory for the given version.
 
-These install scripts can be used the same as the main NixOS.org
-installation script:
+These install scripts can be used the same as usual:
 
 ```console
-$ sh <(curl -L https://nixos.org/nix/install)
+$ curl -L https://releases.nixos.org/nix/nix-<version>/install | sh
 ```
-
-In the same directory of the install script are sha256 sums, and gpg
-signature files.
 
 # Installing from a binary tarball
 

@@ -23,7 +23,7 @@ rec {
   };
   rootCA = mkCADerivation {
     name = "rootCA";
-    outputs = [ "out" "dev" "foo"];
+    outputs = [ "out" "dev" "foo" ];
     buildCommand = ''
       echo "building a CA derivation"
       echo "The seed is ${toString seed}"
@@ -61,11 +61,28 @@ rec {
       echo ${rootCA}/non-ca-hello > $out/dep
     '';
   };
+  dependentForBuildCA = mkCADerivation {
+    name = "dependent-for-build-ca";
+    buildCommand = ''
+      echo "Depends on rootCA for building only"
+      mkdir -p $out
+      echo ${rootCA}
+      touch $out
+    '';
+  };
+  dependentForBuildNonCA = mkDerivation {
+    name = "dependent-for-build-non-ca";
+    buildCommand = ''
+      echo "Depends on rootCA for building only"
+      mkdir -p $out
+      echo ${rootCA}
+      touch $out
+    '';
+  };
   dependentFixedOutput = mkDerivation {
     name = "dependent-fixed-output";
     outputHashMode = "recursive";
-    outputHashAlgo = "sha256";
-    outputHash = "sha256-QvtAMbUl/uvi+LCObmqOhvNOapHdA2raiI4xG5zI5pA=";
+    outputHash = "sha512-7aJcmSuEuYP5tGKcmGY8bRr/lrCjJlOxP2mIUjO/vMQeg6gx/65IbzRWES8EKiPDOs9z+wF30lEfcwxM/cT4pw==";
     buildCommand = ''
       cat ${dependentCA}/dep
       echo foo > $out
@@ -76,7 +93,7 @@ rec {
     buildCommand = ''
       mkdir -p $out/bin
       echo ${rootCA} # Just to make it depend on it
-      echo "" > $out/bin/${name}
+      echo "#! ${shell}" > $out/bin/${name}
       chmod +x $out/bin/${name}
     '';
   };

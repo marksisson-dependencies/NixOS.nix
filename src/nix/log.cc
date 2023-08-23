@@ -2,6 +2,7 @@
 #include "common-args.hh"
 #include "shared.hh"
 #include "store-api.hh"
+#include "log-store.hh"
 #include "progress-bar.hh"
 
 using namespace nix;
@@ -22,7 +23,7 @@ struct CmdLog : InstallableCommand
 
     Category category() override { return catSecondary; }
 
-    void run(ref<Store> store) override
+    void run(ref<Store> store, ref<Installable> installable) override
     {
         settings.readOnlyMode = true;
 
@@ -32,20 +33,31 @@ struct CmdLog : InstallableCommand
 
         auto b = installable->toDerivedPath();
 
+        // For compat with CLI today, TODO revisit
+        auto oneUp = std::visit(overloaded {
+            [&](const DerivedPath::Opaque & bo) {
+                return make_ref<SingleDerivedPath>(bo);
+            },
+            [&](const DerivedPath::Built & bfd) {
+                return bfd.drvPath;
+            },
+        }, b.path.raw());
+        auto path = resolveDerivedPath(*store, *oneUp);
+
         RunPager pager;
         for (auto & sub : subs) {
-            auto log = std::visit(overloaded {
-                [&](const DerivedPath::Opaque & bo) {
-                    return sub->getBuildLog(bo.path);
-                },
-                [&](const DerivedPath::Built & bfd) {
-                    return sub->getBuildLog(bfd.drvPath);
-                },
-            }, b.raw());
+            auto * logSubP = dynamic_cast<LogStore *>(&*sub);
+            if (!logSubP) {
+                printInfo("Skipped '%s' which does not support retrieving build logs", sub->getUri());
+                continue;
+            }
+            auto & logSub = *logSubP;
+
+            auto log = logSub.getBuildLog(path);
             if (!log) continue;
             stopProgressBar();
-            printInfo("got build log for '%s' from '%s'", installable->what(), sub->getUri());
-            std::cout << *log;
+            printInfo("got build log for '%s' from '%s'", installable->what(), logSub.getUri());
+            writeFull(STDOUT_FILENO, *log);
             return;
         }
 

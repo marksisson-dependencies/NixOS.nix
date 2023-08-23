@@ -15,7 +15,6 @@ my $evalId = $ARGV[0] or die "Usage: $0 EVAL-ID\n";
 
 my $releasesBucketName = "nix-releases";
 my $channelsBucketName = "nix-channels";
-my $nixpkgsDir = "/home/eelco/Dev/nixpkgs-pristine";
 
 my $TMPDIR = $ENV{'TMPDIR'} // "/tmp";
 
@@ -55,6 +54,11 @@ my $releaseDir = "nix/$releaseName";
 my $tmpDir = "$TMPDIR/nix-release/$releaseName";
 File::Path::make_path($tmpDir);
 
+my $narCache = "$TMPDIR/nar-cache";
+File::Path::make_path($narCache);
+
+my $binaryCache = "https://cache.nixos.org/?local-nar-cache=$narCache";
+
 # S3 setup.
 my $aws_access_key_id = $ENV{'AWS_ACCESS_KEY_ID'} or die "No AWS_ACCESS_KEY_ID given.";
 my $aws_secret_access_key = $ENV{'AWS_SECRET_ACCESS_KEY'} or die "No AWS_SECRET_ACCESS_KEY given.";
@@ -76,10 +80,43 @@ my $s3_us = Net::Amazon::S3->new(
 
 my $channelsBucket = $s3_us->bucket($channelsBucketName) or die;
 
+sub getStorePath {
+    my ($jobName, $output) = @_;
+    my $buildInfo = decode_json(fetch("$evalUrl/job/$jobName", 'application/json'));
+    return $buildInfo->{buildoutputs}->{$output or "out"}->{path} or die "cannot get store path for '$jobName'";
+}
+
+sub copyManual {
+    my $manual = getStorePath("build.x86_64-linux", "doc");
+    print "$manual\n";
+
+    my $manualNar = "$tmpDir/$releaseName-manual.nar.xz";
+    print "$manualNar\n";
+
+    unless (-e $manualNar) {
+        system("NIX_REMOTE=$binaryCache nix store dump-path '$manual' | xz > '$manualNar'.tmp") == 0
+            or die "unable to fetch $manual\n";
+        rename("$manualNar.tmp", $manualNar) or die;
+    }
+
+    unless (-e "$tmpDir/manual") {
+        system("xz -d < '$manualNar' | nix-store --restore $tmpDir/manual.tmp") == 0
+            or die "unable to unpack $manualNar\n";
+        rename("$tmpDir/manual.tmp/share/doc/nix/manual", "$tmpDir/manual") or die;
+        system("rm -rf '$tmpDir/manual.tmp'") == 0 or die;
+    }
+
+    system("aws s3 sync '$tmpDir/manual' s3://$releasesBucketName/$releaseDir/manual") == 0
+        or die "syncing manual to S3\n";
+}
+
+copyManual;
+
 sub downloadFile {
     my ($jobName, $productNr, $dstName) = @_;
 
     my $buildInfo = decode_json(fetch("$evalUrl/job/$jobName", 'application/json'));
+    #print STDERR "$jobName: ", Dumper($buildInfo), "\n";
 
     my $srcFile = $buildInfo->{buildproducts}->{$productNr}->{path} or die "job '$jobName' lacks product $productNr\n";
     $dstName //= basename($srcFile);
@@ -87,23 +124,27 @@ sub downloadFile {
 
     if (!-e $tmpFile) {
         print STDERR "downloading $srcFile to $tmpFile...\n";
-        system("NIX_REMOTE=https://cache.nixos.org/ nix store cat '$srcFile' > '$tmpFile'") == 0
+
+        my $fileInfo = decode_json(`NIX_REMOTE=$binaryCache nix store ls --json '$srcFile'`);
+
+        $srcFile = $fileInfo->{target} if $fileInfo->{type} eq 'symlink';
+
+        #print STDERR $srcFile, " ", Dumper($fileInfo), "\n";
+
+        system("NIX_REMOTE=$binaryCache nix store cat '$srcFile' > '$tmpFile'.tmp") == 0
             or die "unable to fetch $srcFile\n";
+        rename("$tmpFile.tmp", $tmpFile) or die;
     }
 
-    my $sha256_expected = $buildInfo->{buildproducts}->{$productNr}->{sha256hash} or die;
+    my $sha256_expected = $buildInfo->{buildproducts}->{$productNr}->{sha256hash};
     my $sha256_actual = `nix hash file --base16 --type sha256 '$tmpFile'`;
     chomp $sha256_actual;
-    if ($sha256_expected ne $sha256_actual) {
+    if (defined($sha256_expected) && $sha256_expected ne $sha256_actual) {
         print STDERR "file $tmpFile is corrupt, got $sha256_actual, expected $sha256_expected\n";
         exit 1;
     }
 
-    write_file("$tmpFile.sha256", $sha256_expected);
-
-    if (! -e "$tmpFile.asc") {
-        system("gpg2 --detach-sign --armor $tmpFile") == 0 or die "unable to sign $tmpFile\n";
-    }
+    write_file("$tmpFile.sha256", $sha256_actual);
 
     return $sha256_expected;
 }
@@ -117,8 +158,73 @@ downloadFile("binaryTarballCross.x86_64-linux.armv6l-linux", "1");
 downloadFile("binaryTarballCross.x86_64-linux.armv7l-linux", "1");
 downloadFile("installerScript", "1");
 
+# Upload docker images to dockerhub.
+my $dockerManifest = "";
+my $dockerManifestLatest = "";
+
+for my $platforms (["x86_64-linux", "amd64"], ["aarch64-linux", "arm64"]) {
+    my $system = $platforms->[0];
+    my $dockerPlatform = $platforms->[1];
+    my $fn = "nix-$version-docker-image-$dockerPlatform.tar.gz";
+    downloadFile("dockerImage.$system", "1", $fn);
+
+    print STDERR "loading docker image for $dockerPlatform...\n";
+    system("docker load -i $tmpDir/$fn") == 0 or die;
+
+    my $tag = "nixos/nix:$version-$dockerPlatform";
+    my $latestTag = "nixos/nix:latest-$dockerPlatform";
+
+    print STDERR "tagging $version docker image for $dockerPlatform...\n";
+    system("docker tag nix:$version $tag") == 0 or die;
+
+    if ($isLatest) {
+        print STDERR "tagging latest docker image for $dockerPlatform...\n";
+        system("docker tag nix:$version $latestTag") == 0 or die;
+    }
+
+    print STDERR "pushing $version docker image for $dockerPlatform...\n";
+    system("docker push -q $tag") == 0 or die;
+
+    if ($isLatest) {
+        print STDERR "pushing latest docker image for $dockerPlatform...\n";
+        system("docker push -q $latestTag") == 0 or die;
+    }
+
+    $dockerManifest .= " --amend $tag";
+    $dockerManifestLatest .= " --amend $latestTag"
+}
+
+print STDERR "creating multi-platform docker manifest...\n";
+system("docker manifest rm nixos/nix:$version");
+system("docker manifest create nixos/nix:$version $dockerManifest") == 0 or die;
+if ($isLatest) {
+    print STDERR "creating latest multi-platform docker manifest...\n";
+    system("docker manifest rm nixos/nix:latest");
+    system("docker manifest create nixos/nix:latest $dockerManifestLatest") == 0 or die;
+}
+
+print STDERR "pushing multi-platform docker manifest...\n";
+system("docker manifest push nixos/nix:$version") == 0 or die;
+
+if ($isLatest) {
+    print STDERR "pushing latest multi-platform docker manifest...\n";
+    system("docker manifest push nixos/nix:latest") == 0 or die;
+}
+
+# Upload nix-fallback-paths.nix.
+write_file("$tmpDir/fallback-paths.nix",
+    "{\n" .
+    "  x86_64-linux = \"" . getStorePath("build.x86_64-linux") . "\";\n" .
+    "  i686-linux = \"" . getStorePath("build.i686-linux") . "\";\n" .
+    "  aarch64-linux = \"" . getStorePath("build.aarch64-linux") . "\";\n" .
+    "  x86_64-darwin = \"" . getStorePath("build.x86_64-darwin") . "\";\n" .
+    "  aarch64-darwin = \"" . getStorePath("build.aarch64-darwin") . "\";\n" .
+    "}\n");
+
+# Upload release files to S3.
 for my $fn (glob "$tmpDir/*") {
     my $name = basename($fn);
+    next if $name eq "manual";
     my $dstKey = "$releaseDir/" . $name;
     unless (defined $releasesBucket->head_key($dstKey)) {
         print STDERR "uploading $fn to s3://$releasesBucketName/$dstKey...\n";
@@ -126,36 +232,13 @@ for my $fn (glob "$tmpDir/*") {
         my $configuration = ();
         $configuration->{content_type} = "application/octet-stream";
 
-        if ($fn =~ /.sha256|.asc|install/) {
-            # Text files
+        if ($fn =~ /.sha256|install|\.nix$/) {
             $configuration->{content_type} = "text/plain";
         }
 
         $releasesBucket->add_key_filename($dstKey, $fn, $configuration)
             or die $releasesBucket->err . ": " . $releasesBucket->errstr;
     }
-}
-
-# Update nix-fallback-paths.nix.
-if ($isLatest) {
-    system("cd $nixpkgsDir && git pull") == 0 or die;
-
-    sub getStorePath {
-        my ($jobName) = @_;
-        my $buildInfo = decode_json(fetch("$evalUrl/job/$jobName", 'application/json'));
-        return $buildInfo->{buildoutputs}->{out}->{path} or die "cannot get store path for '$jobName'";
-    }
-
-    write_file("$nixpkgsDir/nixos/modules/installer/tools/nix-fallback-paths.nix",
-               "{\n" .
-               "  x86_64-linux = \"" . getStorePath("build.x86_64-linux") . "\";\n" .
-               "  i686-linux = \"" . getStorePath("build.i686-linux") . "\";\n" .
-               "  aarch64-linux = \"" . getStorePath("build.aarch64-linux") . "\";\n" .
-               "  x86_64-darwin = \"" . getStorePath("build.x86_64-darwin") . "\";\n" .
-               "  aarch64-darwin = \"" . getStorePath("build.aarch64-darwin") . "\";\n" .
-               "}\n");
-
-    system("cd $nixpkgsDir && git commit -a -m 'nix-fallback-paths.nix: Update to $version'") == 0 or die;
 }
 
 # Update the "latest" symlink.

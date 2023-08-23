@@ -5,9 +5,32 @@ namespace nix {
 
 
 bool CompareGoalPtrs::operator() (const GoalPtr & a, const GoalPtr & b) const {
-    string s1 = a->key();
-    string s2 = b->key();
+    std::string s1 = a->key();
+    std::string s2 = b->key();
     return s1 < s2;
+}
+
+
+BuildResult Goal::getBuildResult(const DerivedPath & req) {
+    BuildResult res { buildResult };
+
+    if (auto pbp = std::get_if<DerivedPath::Built>(&req)) {
+        auto & bp = *pbp;
+
+        /* Because goals are in general shared between derived paths
+           that share the same derivation, we need to filter their
+           results to get back just the results we care about.
+         */
+
+        for (auto it = res.builtOutputs.begin(); it != res.builtOutputs.end();) {
+            if (bp.outputs.contains(it->first))
+                ++it;
+            else
+                it = res.builtOutputs.erase(it);
+        }
+    }
+
+    return res;
 }
 
 
@@ -28,7 +51,7 @@ void Goal::addWaitee(GoalPtr waitee)
 
 void Goal::waiteeDone(GoalPtr waitee, ExitCode result)
 {
-    assert(waitees.find(waitee) != waitees.end());
+    assert(waitees.count(waitee));
     waitees.erase(waitee);
 
     trace(fmt("waitee '%s' done; %d left", waitee->name, waitees.size()));
@@ -78,9 +101,9 @@ void Goal::amDone(ExitCode result, std::optional<Error> ex)
 }
 
 
-void Goal::trace(const FormatOrString & fs)
+void Goal::trace(std::string_view s)
 {
-    debug("%1%: %2%", name, fs.s);
+    debug("%1%: %2%", name, s);
 }
 
 }

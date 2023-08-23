@@ -58,7 +58,7 @@ readonly EXTRACTED_NIX_PATH="$(dirname "$0")"
 
 readonly ROOT_HOME=~root
 
-if [ -t 0 ]; then
+if [ -t 0 ] && [ -z "${NIX_INSTALLER_YES:-}" ]; then
     readonly IS_HEADLESS='no'
 else
     readonly IS_HEADLESS='yes'
@@ -97,13 +97,10 @@ is_os_darwin() {
 }
 
 contact_us() {
-    echo "You can open an issue at https://github.com/nixos/nix/issues"
+    echo "You can open an issue at"
+    echo "https://github.com/NixOS/nix/issues/new?labels=installer&template=installer.md"
     echo ""
-    echo "Or feel free to contact the team:"
-    echo " - Matrix: #nix:nixos.org"
-    echo " - IRC: in #nixos on irc.libera.chat"
-    echo " - twitter: @nixos_org"
-    echo " - forum: https://discourse.nixos.org"
+    echo "Or get in touch with the community: https://nixos.org/community"
 }
 get_help() {
     echo "We'd love to help if you need it."
@@ -139,7 +136,7 @@ EOF
     cat <<EOF
 $step. Delete the files Nix added to your system:
 
-  sudo rm -rf /etc/nix $NIX_ROOT $ROOT_HOME/.nix-profile $ROOT_HOME/.nix-defexpr $ROOT_HOME/.nix-channels $HOME/.nix-profile $HOME/.nix-defexpr $HOME/.nix-channels
+  sudo rm -rf "/etc/nix" "$NIX_ROOT" "$ROOT_HOME/.nix-profile" "$ROOT_HOME/.nix-defexpr" "$ROOT_HOME/.nix-channels" "$ROOT_HOME/.local/state/nix" "$ROOT_HOME/.cache/nix" "$HOME/.nix-profile" "$HOME/.nix-defexpr" "$HOME/.nix-channels" "$HOME/.local/state/nix" "$HOME/.cache/nix"
 
 and that is it.
 
@@ -249,8 +246,15 @@ printf -v _OLD_LINE_FMT "%b" $'\033[1;7;31m-'"$ESC ${RED}%L${ESC}"
 printf -v _NEW_LINE_FMT "%b" $'\033[1;7;32m+'"$ESC ${GREEN}%L${ESC}"
 
 _diff() {
+    # macOS Ventura doesn't ship with GNU diff. Print similar output except
+    # without +/- markers or dimming
+    if diff --version | grep -q "Apple diff"; then
+        printf -v CHANGED_GROUP_FORMAT "%b" "${GREEN}%>${RED}%<${ESC}"
+        diff --changed-group-format="$CHANGED_GROUP_FORMAT" "$@"
+    else
     # simple colorized diff comatible w/ pre `--color` versions
-    diff --unchanged-group-format="$_UNCHANGED_GRP_FMT" --old-line-format="$_OLD_LINE_FMT" --new-line-format="$_NEW_LINE_FMT" --unchanged-line-format="  %L" "$@"
+        diff --unchanged-group-format="$_UNCHANGED_GRP_FMT" --old-line-format="$_OLD_LINE_FMT" --new-line-format="$_NEW_LINE_FMT" --unchanged-line-format="  %L" "$@"
+    fi
 }
 
 confirm_rm() {
@@ -578,7 +582,7 @@ EOF
     # to extract _just_ the user's note, instead it is prefixed with
     # some plist junk. This was causing the user note to always be set,
     # even if there was no reason for it.
-    if ! poly_user_note_get "$username" | grep -q "Nix build user $coreid"; then
+    if poly_user_note_get "$username" | grep -q "Nix build user $coreid"; then
         row "              Note" "Nix build user $coreid"
     else
         poly_user_note_set "$username" "Nix build user $coreid"
@@ -696,6 +700,10 @@ EOF
 }
 
 welcome_to_nix() {
+    local -r NIX_UID_RANGES="${NIX_FIRST_BUILD_UID}..$((NIX_FIRST_BUILD_UID + NIX_USER_COUNT - 1))"
+    local -r RANGE_TEXT=$(echo -ne "${BLUE}(uids [${NIX_UID_RANGES}])${ESC}")
+    local -r GROUP_TEXT=$(echo -ne "${BLUE}(gid ${NIX_BUILD_GROUP_ID})${ESC}")
+
     ok "Welcome to the Multi-User Nix Installation"
 
     cat <<EOF
@@ -709,8 +717,8 @@ manager. This will happen in a few stages:
 2. Show you what I am going to install and where. Then I will ask
    if you are ready to continue.
 
-3. Create the system users and groups that the Nix daemon uses to run
-   builds.
+3. Create the system users ${RANGE_TEXT} and groups ${GROUP_TEXT}
+   that the Nix daemon uses to run builds.
 
 4. Perform the basic installation of the Nix files daemon.
 
@@ -876,7 +884,7 @@ configure_shell_profile() {
         fi
     done
 
-    task "Setting up shell profiles for Fish with with ${PROFILE_FISH_SUFFIX} inside ${PROFILE_FISH_PREFIXES[*]}"
+    task "Setting up shell profiles for Fish with ${PROFILE_FISH_SUFFIX} inside ${PROFILE_FISH_PREFIXES[*]}"
     for fish_prefix in "${PROFILE_FISH_PREFIXES[@]}"; do
         if [ ! -d "$fish_prefix" ]; then
             # this specific prefix (ie: /etc/fish) is very likely to exist

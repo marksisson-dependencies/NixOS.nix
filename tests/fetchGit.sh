@@ -1,9 +1,6 @@
 source common.sh
 
-if [[ -z $(type -p git) ]]; then
-    echo "Git not installed; skipping Git tests"
-    exit 99
-fi
+requireGit
 
 clearStore
 
@@ -24,12 +21,14 @@ touch $repo/.gitignore
 git -C $repo add hello .gitignore
 git -C $repo commit -m 'Bla1'
 rev1=$(git -C $repo rev-parse HEAD)
+git -C $repo tag -a tag1 -m tag1
 
 echo world > $repo/hello
 git -C $repo commit -m 'Bla2' -a
 git -C $repo worktree add $TEST_ROOT/worktree
 echo hello >> $TEST_ROOT/worktree/hello
 rev2=$(git -C $repo rev-parse HEAD)
+git -C $repo tag -a tag2 -m tag2
 
 # Fetch a worktree
 unset _NIX_FORCE_HTTP
@@ -106,6 +105,8 @@ path2=$(nix eval --impure --raw --expr "(builtins.fetchGit $repo).outPath")
 [[ $(cat $path2/dir1/foo) = foo ]]
 
 [[ $(nix eval --impure --raw --expr "(builtins.fetchGit $repo).rev") = 0000000000000000000000000000000000000000 ]]
+[[ $(nix eval --impure --raw --expr "(builtins.fetchGit $repo).dirtyRev") = "${rev2}-dirty" ]]
+[[ $(nix eval --impure --raw --expr "(builtins.fetchGit $repo).dirtyShortRev") = "${rev2:0:7}-dirty" ]]
 
 # ... unless we're using an explicit ref or rev.
 path3=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = $repo; ref = \"master\"; }).outPath")
@@ -120,6 +121,11 @@ git -C $repo commit -m 'Bla3' -a
 path4=$(nix eval --impure --refresh --raw --expr "(builtins.fetchGit file://$repo).outPath")
 [[ $path2 = $path4 ]]
 
+[[ $(nix eval --impure --expr "builtins.hasAttr \"rev\" (builtins.fetchGit $repo)") == "true" ]]
+[[ $(nix eval --impure --expr "builtins.hasAttr \"dirtyRev\" (builtins.fetchGit $repo)") == "false" ]]
+[[ $(nix eval --impure --expr "builtins.hasAttr \"dirtyShortRev\" (builtins.fetchGit $repo)") == "false" ]]
+
+status=0
 nix eval --impure --raw --expr "(builtins.fetchGit { url = $repo; rev = \"$rev2\"; narHash = \"sha256-B5yIPHhEm0eysJKEsO7nqxprh9vcblFxpJG11gXJus1=\"; }).outPath" || status=$?
 [[ "$status" = "102" ]]
 
@@ -217,6 +223,16 @@ rev4_nix=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$
 path9=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$repo\"; ref = \"HEAD\"; name = \"foo\"; }).outPath")
 [[ $path9 =~ -foo$ ]]
 
+# Specifying a ref without a rev shouldn't pick a cached rev for a different ref
+export _NIX_FORCE_HTTP=1
+rev_tag1_nix=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$repo\"; ref = \"refs/tags/tag1\"; }).rev")
+rev_tag1=$(git -C $repo rev-parse refs/tags/tag1)
+[[ $rev_tag1_nix = $rev_tag1 ]]
+rev_tag2_nix=$(nix eval --impure --raw --expr "(builtins.fetchGit { url = \"file://$repo\"; ref = \"refs/tags/tag2\"; }).rev")
+rev_tag2=$(git -C $repo rev-parse refs/tags/tag2)
+[[ $rev_tag2_nix = $rev_tag2 ]]
+unset _NIX_FORCE_HTTP
+
 # should fail if there is no repo
 rm -rf $repo/.git
 (! nix eval --impure --raw --expr "(builtins.fetchGit \"file://$repo\").outPath")
@@ -224,3 +240,17 @@ rm -rf $repo/.git
 # should succeed for a repo without commits
 git init $repo
 path10=$(nix eval --impure --raw --expr "(builtins.fetchGit \"file://$repo\").outPath")
+
+# should succeed for a path with a space
+# regression test for #7707
+repo="$TEST_ROOT/a b"
+git init "$repo"
+git -C "$repo" config user.email "foobar@example.com"
+git -C "$repo" config user.name "Foobar"
+
+echo utrecht > "$repo/hello"
+touch "$repo/.gitignore"
+git -C "$repo" add hello .gitignore
+git -C "$repo" commit -m 'Bla1'
+cd "$repo"
+path11=$(nix eval --impure --raw --expr "(builtins.fetchGit ./.).outPath")

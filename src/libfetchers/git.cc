@@ -18,6 +18,7 @@
 using namespace std::string_literals;
 
 namespace nix::fetchers {
+
 namespace {
 
 // Explicit initial branch of our bare repo to suppress warnings from new version of git.
@@ -26,23 +27,23 @@ namespace {
 // old version of git, which will ignore unrecognized `-c` options.
 const std::string gitInitialBranch = "__nix_dummy_branch";
 
-bool isCacheFileWithinTtl(const time_t now, const struct stat & st)
+bool isCacheFileWithinTtl(time_t now, const struct stat & st)
 {
     return st.st_mtime + settings.tarballTtl > now;
 }
 
-bool touchCacheFile(const Path& path, const time_t& touch_time)
+bool touchCacheFile(const Path & path, time_t touch_time)
 {
-  struct timeval times[2];
-  times[0].tv_sec = touch_time;
-  times[0].tv_usec = 0;
-  times[1].tv_sec = touch_time;
-  times[1].tv_usec = 0;
+    struct timeval times[2];
+    times[0].tv_sec = touch_time;
+    times[0].tv_usec = 0;
+    times[1].tv_sec = touch_time;
+    times[1].tv_usec = 0;
 
-  return lutimes(path.c_str(), times) == 0;
+    return lutimes(path.c_str(), times) == 0;
 }
 
-Path getCachePath(std::string key)
+Path getCachePath(std::string_view key)
 {
     return getCacheDir() + "/nix/gitv3/" +
         hashString(htSHA256, key).to_string(Base32, false);
@@ -57,13 +58,13 @@ Path getCachePath(std::string key)
 //   ...
 std::optional<std::string> readHead(const Path & path)
 {
-    auto [exit_code, output] = runProgram(RunOptions {
+    auto [status, output] = runProgram(RunOptions {
         .program = "git",
+        // FIXME: use 'HEAD' to avoid returning all refs
         .args = {"ls-remote", "--symref", path},
+        .isInteractive = true,
     });
-    if (exit_code != 0) {
-        return std::nullopt;
-    }
+    if (status != 0) return std::nullopt;
 
     std::string_view line = output;
     line = line.substr(0, line.find("\n"));
@@ -82,12 +83,11 @@ std::optional<std::string> readHead(const Path & path)
 }
 
 // Persist the HEAD ref from the remote repo in the local cached repo.
-bool storeCachedHead(const std::string& actualUrl, const std::string& headRef)
+bool storeCachedHead(const std::string & actualUrl, const std::string & headRef)
 {
     Path cacheDir = getCachePath(actualUrl);
-    auto gitDir = ".";
     try {
-        runProgram("git", true, { "-C", cacheDir, "--git-dir", gitDir, "symbolic-ref", "--", "HEAD", headRef });
+        runProgram("git", true, { "-C", cacheDir, "--git-dir", ".", "symbolic-ref", "--", "HEAD", headRef });
     } catch (ExecError &e) {
         if (!WIFEXITED(e.status)) throw;
         return false;
@@ -96,7 +96,7 @@ bool storeCachedHead(const std::string& actualUrl, const std::string& headRef)
     return true;
 }
 
-std::optional<std::string> readHeadCached(const std::string& actualUrl)
+std::optional<std::string> readHeadCached(const std::string & actualUrl)
 {
     // Create a cache path to store the branch of the HEAD ref. Append something
     // in front of the URL to prevent collision with the repository itself.
@@ -110,16 +110,15 @@ std::optional<std::string> readHeadCached(const std::string& actualUrl)
         cachedRef = readHead(cacheDir);
         if (cachedRef != std::nullopt &&
             *cachedRef != gitInitialBranch &&
-            isCacheFileWithinTtl(now, st)) {
+            isCacheFileWithinTtl(now, st))
+        {
             debug("using cached HEAD ref '%s' for repo '%s'", *cachedRef, actualUrl);
             return cachedRef;
         }
     }
 
     auto ref = readHead(actualUrl);
-    if (ref) {
-        return ref;
-    }
+    if (ref) return ref;
 
     if (cachedRef) {
         // If the cached git ref is expired in fetch() below, and the 'git fetch'
@@ -244,13 +243,20 @@ std::pair<StorePath, Input> fetchFromWorkdir(ref<Store> store, Input & input, co
         "lastModified",
         workdirInfo.hasHead ? std::stoull(runProgram("git", true, { "-C", actualPath, "--git-dir", gitDir, "log", "-1", "--format=%ct", "--no-show-signature", "HEAD" })) : 0);
 
+    if (workdirInfo.hasHead) {
+        input.attrs.insert_or_assign("dirtyRev", chomp(
+            runProgram("git", true, { "-C", actualPath, "--git-dir", gitDir, "rev-parse", "--verify", "HEAD" })) + "-dirty");
+        input.attrs.insert_or_assign("dirtyShortRev", chomp(
+            runProgram("git", true, { "-C", actualPath, "--git-dir", gitDir, "rev-parse", "--verify", "--short", "HEAD" })) + "-dirty");
+    }
+
     return {std::move(storePath), input};
 }
 }  // end namespace
 
 struct GitInputScheme : InputScheme
 {
-    std::optional<Input> inputFromURL(const ParsedURL & url) override
+    std::optional<Input> inputFromURL(const ParsedURL & url, bool requireTree) const override
     {
         if (url.scheme != "git" &&
             url.scheme != "git+http" &&
@@ -265,10 +271,10 @@ struct GitInputScheme : InputScheme
         Attrs attrs;
         attrs.emplace("type", "git");
 
-        for (auto &[name, value] : url.query) {
+        for (auto & [name, value] : url.query) {
             if (name == "rev" || name == "ref")
                 attrs.emplace(name, value);
-            else if (name == "shallow" || name == "submodules")
+            else if (name == "shallow" || name == "submodules" || name == "allRefs")
                 attrs.emplace(name, Explicit<bool> { value == "1" });
             else
                 url2.query.emplace(name, value);
@@ -279,12 +285,12 @@ struct GitInputScheme : InputScheme
         return inputFromAttrs(attrs);
     }
 
-    std::optional<Input> inputFromAttrs(const Attrs & attrs) override
+    std::optional<Input> inputFromAttrs(const Attrs & attrs) const override
     {
         if (maybeGetStrAttr(attrs, "type") != "git") return {};
 
         for (auto & [name, value] : attrs)
-            if (name != "type" && name != "url" && name != "ref" && name != "rev" && name != "shallow" && name != "submodules" && name != "lastModified" && name != "revCount" && name != "narHash" && name != "allRefs" && name != "name")
+            if (name != "type" && name != "url" && name != "ref" && name != "rev" && name != "shallow" && name != "submodules" && name != "lastModified" && name != "revCount" && name != "narHash" && name != "allRefs" && name != "name" && name != "dirtyRev" && name != "dirtyShortRev")
                 throw Error("unsupported Git input attribute '%s'", name);
 
         parseURL(getStrAttr(attrs, "url"));
@@ -302,7 +308,7 @@ struct GitInputScheme : InputScheme
         return input;
     }
 
-    ParsedURL toURL(const Input & input) override
+    ParsedURL toURL(const Input & input) const override
     {
         auto url = parseURL(getStrAttr(input.attrs, "url"));
         if (url.scheme != "git") url.scheme = "git+" + url.scheme;
@@ -313,7 +319,7 @@ struct GitInputScheme : InputScheme
         return url;
     }
 
-    bool hasAllInfo(const Input & input) override
+    bool hasAllInfo(const Input & input) const override
     {
         bool maybeDirty = !input.getRef();
         bool shallow = maybeGetBoolAttr(input.attrs, "shallow").value_or(false);
@@ -325,7 +331,7 @@ struct GitInputScheme : InputScheme
     Input applyOverrides(
         const Input & input,
         std::optional<std::string> ref,
-        std::optional<Hash> rev) override
+        std::optional<Hash> rev) const override
     {
         auto res(input);
         if (rev) res.attrs.insert_or_assign("rev", rev->gitRev());
@@ -335,7 +341,7 @@ struct GitInputScheme : InputScheme
         return res;
     }
 
-    void clone(const Input & input, const Path & destDir) override
+    void clone(const Input & input, const Path & destDir) const override
     {
         auto [isLocal, actualUrl] = getActualUrl(input);
 
@@ -352,7 +358,7 @@ struct GitInputScheme : InputScheme
 
         args.push_back(destDir);
 
-        runProgram("git", true, args);
+        runProgram("git", true, args, {}, true);
     }
 
     std::optional<Path> getSourcePath(const Input & input) override
@@ -485,6 +491,10 @@ struct GitInputScheme : InputScheme
                 }
                 input.attrs.insert_or_assign("ref", *head);
                 unlockedAttrs.insert_or_assign("ref", *head);
+            } else {
+                if (!input.getRev()) {
+                    unlockedAttrs.insert_or_assign("ref", input.getRef().value());
+                }
             }
 
             if (auto res = getCache()->lookup(store, unlockedAttrs)) {
@@ -553,7 +563,7 @@ struct GitInputScheme : InputScheme
                             : ref == "HEAD"
                                 ? *ref
                                 : "refs/heads/" + *ref;
-                    runProgram("git", true, { "-C", repoDir, "--git-dir", gitDir, "fetch", "--quiet", "--force", "--", actualUrl, fmt("%s:%s", fetchRef, fetchRef) });
+                    runProgram("git", true, { "-C", repoDir, "--git-dir", gitDir, "fetch", "--quiet", "--force", "--", actualUrl, fmt("%s:%s", fetchRef, fetchRef) }, {}, true);
                 } catch (Error & e) {
                     if (!pathExists(localRefFile)) throw;
                     warn("could not update local clone of Git repository '%s'; continuing with the most recent version", actualUrl);
@@ -599,9 +609,9 @@ struct GitInputScheme : InputScheme
         {
             throw Error(
                 "Cannot find Git revision '%s' in ref '%s' of repository '%s'! "
-                    "Please make sure that the " ANSI_BOLD "rev" ANSI_NORMAL " exists on the "
-                    ANSI_BOLD "ref" ANSI_NORMAL " you've specified or add " ANSI_BOLD
-                    "allRefs = true;" ANSI_NORMAL " to " ANSI_BOLD "fetchGit" ANSI_NORMAL ".",
+                "Please make sure that the " ANSI_BOLD "rev" ANSI_NORMAL " exists on the "
+                ANSI_BOLD "ref" ANSI_NORMAL " you've specified or add " ANSI_BOLD
+                "allRefs = true;" ANSI_NORMAL " to " ANSI_BOLD "fetchGit" ANSI_NORMAL ".",
                 input.getRev()->gitRev(),
                 *input.getRef(),
                 actualUrl
@@ -613,15 +623,42 @@ struct GitInputScheme : InputScheme
             AutoDelete delTmpGitDir(tmpGitDir, true);
 
             runProgram("git", true, { "-c", "init.defaultBranch=" + gitInitialBranch, "init", tmpDir, "--separate-git-dir", tmpGitDir });
-            // TODO: repoDir might lack the ref (it only checks if rev
-            // exists, see FIXME above) so use a big hammer and fetch
-            // everything to ensure we get the rev.
-            runProgram("git", true, { "-C", tmpDir, "fetch", "--quiet", "--force",
-                                      "--update-head-ok", "--", repoDir, "refs/*:refs/*" });
+
+            {
+                // TODO: repoDir might lack the ref (it only checks if rev
+                // exists, see FIXME above) so use a big hammer and fetch
+                // everything to ensure we get the rev.
+                Activity act(*logger, lvlTalkative, actUnknown, fmt("making temporary clone of '%s'", repoDir));
+                runProgram("git", true, { "-C", tmpDir, "fetch", "--quiet", "--force",
+                        "--update-head-ok", "--", repoDir, "refs/*:refs/*" }, {}, true);
+            }
 
             runProgram("git", true, { "-C", tmpDir, "checkout", "--quiet", input.getRev()->gitRev() });
-            runProgram("git", true, { "-C", tmpDir, "remote", "add", "origin", actualUrl });
-            runProgram("git", true, { "-C", tmpDir, "submodule", "--quiet", "update", "--init", "--recursive" });
+
+            /* Ensure that we use the correct origin for fetching
+               submodules. This matters for submodules with relative
+               URLs. */
+            if (isLocal) {
+                writeFile(tmpGitDir + "/config", readFile(repoDir + "/" + gitDir + "/config"));
+
+                /* Restore the config.bare setting we may have just
+                   copied erroneously from the user's repo. */
+                runProgram("git", true, { "-C", tmpDir, "config", "core.bare", "false" });
+            } else
+                runProgram("git", true, { "-C", tmpDir, "config", "remote.origin.url", actualUrl });
+
+            /* As an optimisation, copy the modules directory of the
+               source repo if it exists. */
+            auto modulesPath = repoDir + "/" + gitDir + "/modules";
+            if (pathExists(modulesPath)) {
+                Activity act(*logger, lvlTalkative, actUnknown, fmt("copying submodules of '%s'", actualUrl));
+                runProgram("cp", true, { "-R", "--", modulesPath, tmpGitDir + "/modules" });
+            }
+
+            {
+                Activity act(*logger, lvlTalkative, actUnknown, fmt("fetching submodules of '%s'", actualUrl));
+                runProgram("git", true, { "-C", tmpDir, "submodule", "--quiet", "update", "--init", "--recursive" }, {}, true);
+            }
 
             filter = isNotDotGitDirectory;
         } else {

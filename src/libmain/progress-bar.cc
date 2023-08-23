@@ -72,6 +72,7 @@ private:
         uint64_t corruptedPaths = 0, untrustedPaths = 0;
 
         bool active = true;
+        bool paused = false;
         bool haveUpdate = true;
     };
 
@@ -107,7 +108,8 @@ public:
         stop();
     }
 
-    void stop() override
+    /* Called by destructor, can't be overridden */
+    void stop() override final
     {
         {
             auto state(state_.lock());
@@ -120,19 +122,31 @@ public:
         updateThread.join();
     }
 
+    void pause() override {
+        state_.lock()->paused = true;
+        writeToStderr("\r\e[K");
+    }
+
+    void resume() override {
+        state_.lock()->paused = false;
+        writeToStderr("\r\e[K");
+        state_.lock()->haveUpdate = true;
+        updateCV.notify_one();
+    }
+
     bool isVerbose() override
     {
         return printBuildLogs;
     }
 
-    void log(Verbosity lvl, const FormatOrString & fs) override
+    void log(Verbosity lvl, std::string_view s) override
     {
         if (lvl > verbosity) return;
         auto state(state_.lock());
-        log(*state, lvl, fs.s);
+        log(*state, lvl, s);
     }
 
-    void logEI(const ErrorInfo &ei) override
+    void logEI(const ErrorInfo & ei) override
     {
         auto state(state_.lock());
 
@@ -142,7 +156,7 @@ public:
         log(*state, ei.level, oss.str());
     }
 
-    void log(State & state, Verbosity lvl, const std::string & s)
+    void log(State & state, Verbosity lvl, std::string_view s)
     {
         if (state.active) {
             writeToStderr("\r\e[K" + filterANSIEscapes(s, !isTTY) + ANSI_NORMAL "\n");
@@ -180,10 +194,12 @@ public:
             auto machineName = getS(fields, 1);
             if (machineName != "")
                 i->s += fmt(" on " ANSI_BOLD "%s" ANSI_NORMAL, machineName);
-            auto curRound = getI(fields, 2);
-            auto nrRounds = getI(fields, 3);
-            if (nrRounds != 1)
-                i->s += fmt(" (round %d/%d)", curRound, nrRounds);
+
+            // Used to be curRound and nrRounds, but the
+            // implementation was broken for a long time.
+            if (getI(fields, 2) != 1 || getI(fields, 3) != 1) {
+                throw Error("log message indicated repeating builds, but this is not currently implemented");
+            }
             i->name = DrvName(name).name;
         }
 
@@ -337,7 +353,7 @@ public:
         auto nextWakeup = std::chrono::milliseconds::max();
 
         state.haveUpdate = false;
-        if (!state.active) return nextWakeup;
+        if (state.paused || !state.active) return nextWakeup;
 
         std::string line;
 
@@ -503,7 +519,7 @@ public:
         return s[0];
     }
 
-    virtual void setPrintBuildLogs(bool printBuildLogs)
+    void setPrintBuildLogs(bool printBuildLogs) override
     {
         this->printBuildLogs = printBuildLogs;
     }

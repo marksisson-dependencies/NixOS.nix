@@ -8,6 +8,7 @@
 , extraPkgs ? []
 , maxLayers ? 100
 , nixConf ? {}
+, flake-registry ? null
 }:
 let
   defaultPkgs = with pkgs; [
@@ -36,6 +37,17 @@ let
       shell = "${pkgs.bashInteractive}/bin/bash";
       home = "/root";
       gid = 0;
+      groups = [ "root" ];
+      description = "System administrator";
+    };
+
+    nobody = {
+      uid = 65534;
+      shell = "${pkgs.shadow}/bin/nologin";
+      home = "/var/empty";
+      gid = 65534;
+      groups = [ "nobody" ];
+      description = "Unprivileged account (don't use!)";
     };
 
   } // lib.listToAttrs (
@@ -57,6 +69,7 @@ let
   groups = {
     root.gid = 0;
     nixbld.gid = 30000;
+    nobody.gid = 65534;
   };
 
   userToPasswd = (
@@ -177,6 +190,12 @@ let
         cp -a ${rootEnv}/* $out/
         ln -s ${manifest} $out/manifest.nix
       '';
+      flake-registry-path = if (flake-registry == null) then
+        null
+      else if (builtins.readFileType (toString flake-registry)) == "directory" then
+        "${flake-registry}/flake-registry.json"
+      else
+        flake-registry;
     in
     pkgs.runCommand "base-system"
       {
@@ -189,7 +208,7 @@ let
         ];
         allowSubstitutes = false;
         preferLocalBuild = true;
-      } ''
+      } (''
       env
       set -x
       mkdir -p $out/etc
@@ -235,7 +254,16 @@ let
       mkdir -p $out/bin $out/usr/bin
       ln -s ${pkgs.coreutils}/bin/env $out/usr/bin/env
       ln -s ${pkgs.bashInteractive}/bin/bash $out/bin/sh
-    '';
+
+    '' + (lib.optionalString (flake-registry-path != null) ''
+      nixCacheDir="/root/.cache/nix"
+      mkdir -p $out$nixCacheDir
+      globalFlakeRegistryPath="$nixCacheDir/flake-registry.json"
+      ln -s ${flake-registry-path} $out$globalFlakeRegistryPath
+      mkdir -p $out/nix/var/nix/gcroots/auto
+      rootName=$(${pkgs.nix}/bin/nix --extra-experimental-features nix-command hash file --type sha1 --base32 <(echo -n $globalFlakeRegistryPath))
+      ln -s $globalFlakeRegistryPath $out/nix/var/nix/gcroots/auto/$rootName
+    ''));
 
 in
 pkgs.dockerTools.buildLayeredImageWithNixDb {

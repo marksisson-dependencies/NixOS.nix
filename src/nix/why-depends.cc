@@ -27,7 +27,7 @@ static std::string filterPrintable(const std::string & s)
     return res;
 }
 
-struct CmdWhyDepends : SourceExprCommand
+struct CmdWhyDepends : SourceExprCommand, MixOperateOnOptions
 {
     std::string _package, _dependency;
     bool all = false;
@@ -83,19 +83,36 @@ struct CmdWhyDepends : SourceExprCommand
     {
         auto package = parseInstallable(store, _package);
         auto packagePath = Installable::toStorePath(getEvalStore(), store, Realise::Outputs, operateOn, package);
+
+        /* We don't need to build `dependency`. We try to get the store
+         * path if it's already known, and if not, then it's not a dependency.
+         *
+         * Why? If `package` does depends on `dependency`, then getting the
+         * store path of `package` above necessitated having the store path
+         * of `dependency`. The contrapositive is, if the store path of
+         * `dependency` is not already known at this point (i.e. it's a CA
+         * derivation which hasn't been built), then `package` did not need it
+         * to build.
+         */
         auto dependency = parseInstallable(store, _dependency);
-        auto dependencyPath = Installable::toStorePath(getEvalStore(), store, Realise::Derivation, operateOn, dependency);
-        auto dependencyPathHash = dependencyPath.hashPart();
+        auto optDependencyPath = [&]() -> std::optional<StorePath> {
+            try {
+                return {Installable::toStorePath(getEvalStore(), store, Realise::Derivation, operateOn, dependency)};
+            } catch (MissingRealisation &) {
+                return std::nullopt;
+            }
+        }();
 
         StorePathSet closure;
         store->computeFSClosure({packagePath}, closure, false, false);
 
-        if (!closure.count(dependencyPath)) {
-            printError("'%s' does not depend on '%s'",
-                store->printStorePath(packagePath),
-                store->printStorePath(dependencyPath));
+        if (!optDependencyPath.has_value() || !closure.count(*optDependencyPath)) {
+            printError("'%s' does not depend on '%s'", package->what(), dependency->what());
             return;
         }
+
+        auto dependencyPath = *optDependencyPath;
+        auto dependencyPathHash = dependencyPath.hashPart();
 
         stopProgressBar(); // FIXME
 
@@ -222,7 +239,7 @@ struct CmdWhyDepends : SourceExprCommand
                         if (pos != std::string::npos) {
                             size_t margin = 32;
                             auto pos2 = pos >= margin ? pos - margin : 0;
-                            hits[hash].emplace_back(fmt("%s: …%s…\n",
+                            hits[hash].emplace_back(fmt("%s: …%s…",
                                     p2,
                                     hilite(filterPrintable(
                                             std::string(contents, pos2, pos - pos2 + hash.size() + margin)),
@@ -238,7 +255,7 @@ struct CmdWhyDepends : SourceExprCommand
                     for (auto & hash : hashes) {
                         auto pos = target.find(hash);
                         if (pos != std::string::npos)
-                            hits[hash].emplace_back(fmt("%s -> %s\n", p2,
+                            hits[hash].emplace_back(fmt("%s -> %s", p2,
                                     hilite(target, pos, StorePath::HashLen, getColour(hash))));
                     }
                 }
@@ -255,9 +272,9 @@ struct CmdWhyDepends : SourceExprCommand
 
                 for (auto & hit : hits[hash]) {
                     bool first = hit == *hits[hash].begin();
-                    std::cout << tailPad
-                              << (first ? (last ? treeLast : treeConn) : (last ? treeNull : treeLine))
-                              << hit;
+                    logger->cout("%s%s%s", tailPad,
+                              (first ? (last ? treeLast : treeConn) : (last ? treeNull : treeLine)),
+                              hit);
                     if (!all) break;
                 }
 

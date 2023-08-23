@@ -1,5 +1,6 @@
 #include <sys/time.h>
 #include <filesystem>
+#include <atomic>
 
 #include "finally.hh"
 #include "util.hh"
@@ -10,21 +11,21 @@ namespace fs = std::filesystem;
 namespace nix {
 
 static Path tempName(Path tmpRoot, const Path & prefix, bool includePid,
-    int & counter)
+    std::atomic<unsigned int> & counter)
 {
     tmpRoot = canonPath(tmpRoot.empty() ? getEnv("TMPDIR").value_or("/tmp") : tmpRoot, true);
     if (includePid)
-        return (format("%1%/%2%-%3%-%4%") % tmpRoot % prefix % getpid() % counter++).str();
+        return fmt("%1%/%2%-%3%-%4%", tmpRoot, prefix, getpid(), counter++);
     else
-        return (format("%1%/%2%-%3%") % tmpRoot % prefix % counter++).str();
+        return fmt("%1%/%2%-%3%", tmpRoot, prefix, counter++);
 }
 
 Path createTempDir(const Path & tmpRoot, const Path & prefix,
     bool includePid, bool useGlobalCounter, mode_t mode)
 {
-    static int globalCounter = 0;
-    int localCounter = 0;
-    int & counter(useGlobalCounter ? globalCounter : localCounter);
+    static std::atomic<unsigned int> globalCounter = 0;
+    std::atomic<unsigned int> localCounter = 0;
+    auto & counter(useGlobalCounter ? globalCounter : localCounter);
 
     while (1) {
         checkInterrupt();
@@ -62,30 +63,19 @@ std::pair<AutoCloseFD, Path> createTempFile(const Path & prefix)
     return {std::move(fd), tmpl};
 }
 
-void createSymlink(const Path & target, const Path & link,
-    std::optional<time_t> mtime)
+void createSymlink(const Path & target, const Path & link)
 {
     if (symlink(target.c_str(), link.c_str()))
         throw SysError("creating symlink from '%1%' to '%2%'", link, target);
-    if (mtime) {
-        struct timeval times[2];
-        times[0].tv_sec = *mtime;
-        times[0].tv_usec = 0;
-        times[1].tv_sec = *mtime;
-        times[1].tv_usec = 0;
-        if (lutimes(link.c_str(), times))
-            throw SysError("setting time of symlink '%s'", link);
-    }
 }
 
-void replaceSymlink(const Path & target, const Path & link,
-    std::optional<time_t> mtime)
+void replaceSymlink(const Path & target, const Path & link)
 {
     for (unsigned int n = 0; true; n++) {
         Path tmp = canonPath(fmt("%s/.%d_%s", dirOf(link), n, baseNameOf(link)));
 
         try {
-            createSymlink(target, tmp, mtime);
+            createSymlink(target, tmp);
         } catch (SysError & e) {
             if (e.errNo == EEXIST) continue;
             throw;
